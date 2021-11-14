@@ -1,3 +1,12 @@
+/*
+ Author: Nisker
+ Credits to: Alex from insideGadgets (www.insidegadgets.com) for the initial implementation.
+ Created: 14/11/2021
+ Last Modified: 14/11/2021
+ License: GPL-3.0
+
+ */
+
 #include "gbxcart.h"
 
 unsigned int save_reserved_mem = 0;

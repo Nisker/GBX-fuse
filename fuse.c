@@ -1,8 +1,9 @@
 /*
- * Compile with:
- *
- *    make
- *
+ Author: Nisker
+ Created: 14/11/2021
+ Last Modified: 14/11/2021
+ License: GPL-3.0
+
  */
 
  /*
@@ -230,6 +231,8 @@ int main(int argc, char *argv[])
 		printf("usage: %s [options] <mountpoint>\n\n", argv[0]);
 		fuse_cmdline_help();
 		fuse_lowlevel_help();
+		printf("\n    -n   --norom           Read only Save data\n");
+		printf("    -r   --reread          Re-read the cartridge on reinsert\n");
 		ret = 0;
 		goto err_out1;
 	} else if (opts.show_version) {
