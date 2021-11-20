@@ -12,6 +12,7 @@
  */
 
 #define FUSE_USE_VERSION 34
+#define _GNU_SOURCE
 
 #include <fuse_lowlevel.h>
 #include <stdio.h>
@@ -45,13 +46,16 @@ struct FileInfo *save = &nosave;
 struct FileInfo *game = &nogame;
 struct options options;
 
+int condition = 0;
 
 #define OPTION(t, p) { t, offsetof(struct options, p), 1 }
 static const struct fuse_opt gbx_opts[] = {
 	OPTION("--norom", ramOnly),
 	OPTION("-n", ramOnly),
 	OPTION("--reread", reread),
-	OPTION("-r", reread),
+	OPTION("-e", reread),
+	OPTION("--readonly", readonly),
+	OPTION("-r", readonly),
 	FUSE_OPT_END
 };
 
@@ -182,17 +186,18 @@ static void fun_write(fuse_req_t req, fuse_ino_t ino, const char *buf, size_t si
 
 	if (ino == GAME_INO){
 		fuse_reply_err(req, EACCES);						//Permission denied
+	} 
+	
+	else if (ino == SAVE_INO) {
+		if (save == &nosave) fuse_reply_err(req, EAGAIN); 	//if there is no save, tell user to retry later
+		else if (size+off <= dmp_save.size){
+			memcpy(dmp_save.data+off, buf, size);
+			fuse_reply_write(req, size);
+			condition = 1;
+		} else fuse_reply_err(req, EFBIG);
 	}
 
-	if (ino == SAVE_INO) {
-		if (save == &nosave) fuse_reply_err(req, EAGAIN); 	//if there is no save, tell user to retry later
-		else if (size+off <= save_reserved_mem){
-			memcpy(dmp_save.data+off, buf, size);
-			if (size+off > dmp_save.size) dmp_save.size = off+size;
-			fuse_reply_write(req, size);
-		} else fuse_reply_err(req, EFBIG); //TODO malloc more memory
-	}
-	fuse_reply_err(req, ENOENT);
+	else fuse_reply_err(req, ENOENT);
 }
 
 static void fun_unlink(fuse_req_t req, fuse_ino_t parent, const char *name){
@@ -231,8 +236,9 @@ int main(int argc, char *argv[])
 		printf("usage: %s [options] <mountpoint>\n\n", argv[0]);
 		fuse_cmdline_help();
 		fuse_lowlevel_help();
-		printf("\n    -n   --norom           Read only Save data\n");
-		printf("    -r   --reread          Re-read the cartridge on reinsert\n");
+		printf("\n    -n   --norom           Read only the Save data\n");
+		printf("    -r   --readonly        Read only mode\n");
+		printf("    -e   --reread          Re-read the cartridge on reinsert\n");
 		ret = 0;
 		goto err_out1;
 	} else if (opts.show_version) {
@@ -272,7 +278,8 @@ int main(int argc, char *argv[])
 	if (rc){
         fprintf(stderr, "pthread_create failed with %s\n", strerror(rc));
 	}
-	
+	pthread_setname_np(thread, "Thandler");
+
 	/* Block until ctrl+c or fusermount -u */
 	if (opts.singlethread)
 		ret = fuse_session_loop(se);

@@ -14,6 +14,7 @@
 extern struct options {
 	int ramOnly;
 	int reread;
+	int readonly;
 } options;
 
 extern unsigned int save_reserved_mem;
@@ -34,6 +35,8 @@ extern struct FileInfo nosave;
 
 extern struct FileInfo *save;
 extern struct FileInfo *game;
+
+extern int condition;
 
 int gba();
 
