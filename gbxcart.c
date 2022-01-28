@@ -2,7 +2,7 @@
  Author: Nisker
  Credits to: Alex from insideGadgets (www.insidegadgets.com) for the initial implementation.
  Created: 14/11/2021
- Last Modified: 14/11/2021
+ Last Modified: 28/01/2022
  License: GPL-3.0
 
  */
@@ -12,6 +12,9 @@
 unsigned int save_reserved_mem = 0;
 unsigned int game_reserved_mem = 0;
 char dumped_name[20];
+
+pthread_mutex_t mutex;
+pthread_cond_t cond;
 
 static void allocate(char **ptr, unsigned int *prevSize, unsigned int size){
 	if (*prevSize < size) {
@@ -39,7 +42,7 @@ int gba(){
 	
 	// Get PCB version
 	gbxcartPcbVersion = request_value(READ_PCB_VERSION);
-	//xmas_wake_up();
+	xmas_wake_up();
 	set_mode(VOLTAGE_3_3V);
 	
 	return 0;
@@ -52,11 +55,6 @@ static int dumpRam() {
 		if (ramEndAddress > 0 && headerCheckSumOk == 1) {
 			allocate(&dmp_save.data, &save_reserved_mem, 0x10000);
 			currAddr = 0x00000;
-			//printf("Backing up save to %s\n", titleFilename);
-			//printf("[             25%%             50%%             75%%            100%%]\n[");
-
-			// Create a new file
-			//FILE *ramFile = fopen(titleFilename, "wb");
 
 			mbc2_fix();
 			if (cartridgeType <= 4) { // MBC1
@@ -132,15 +130,9 @@ static int dumpRam() {
 			}
 
 			else {
-				if (ramEndAddress == 0xA1FF) {
-					xmas_setup(ramEndAddress / 28);
-				}
-				else if (ramEndAddress == 0xA7FF) {
-					xmas_setup(ramEndAddress / 4 / 28);
-				}
-				else {
-					xmas_setup((ramBanks * (ramEndAddress - 0xA000 + 1)) / 28);
-				}
+				if (ramEndAddress == 0xA1FF) xmas_setup(ramEndAddress / 28);
+				else if (ramEndAddress == 0xA7FF) xmas_setup(ramEndAddress / 4 / 28);
+				else xmas_setup((ramBanks * (ramEndAddress - 0xA000 + 1)) / 28);
 
 				// Read RAM
 				uint32_t readBytes = 0;
@@ -164,16 +156,13 @@ static int dumpRam() {
 							}
 						}
 						else { // Didn't receive 64 bytes, usually this only happens for Apple MACs
-							//fflush(ramFile);
 							com_read_stop();
 							delay_ms(500);
-							//printf("Retrying\n");
 
 							// Flush buffer
 							RS232_PollComport(cport_nr, readBuffer, 64);											
 
 							// Start off where we left off
-							//fseek(ramFile, readBytes, SEEK_SET);
 							set_number(ramAddress, SET_START_ADDRESS);
 							set_mode(READ_ROM_RAM);				
 						}
@@ -181,14 +170,11 @@ static int dumpRam() {
 					com_read_stop(); // Stop reading RAM (as we will bank switch)
 				}
 			}
-			//printf("]");
 
 			set_bank(0x4000, 0x00); // Stop rumble if it's present
 			set_bank(0x0000, 0x00); // Disable RAM
 
-			//fclose(ramFile);
 			gbx_set_done_led();
-			//printf("\nFinished\n");
 		}
 		else {
 			return 1;
@@ -200,9 +186,6 @@ static int dumpRam() {
 			// SRAM/Flash
 			if (ramEndAddress > 0) {
 				allocate(&dmp_save.data, &save_reserved_mem, ramEndAddress);
-				//printf("Backing up save (SRAM/Flash) to %s\n", titleFilename);
-				//printf("[             25%%             50%%             75%%            100%%]\n[");
-
 				xmas_setup((ramBanks * ramEndAddress) / 28);
 
 				// Read RAM
@@ -235,22 +218,17 @@ static int dumpRam() {
 							}
 						}
 						else { // Didn't receive 64 bytes, usually this only happens for Apple MACs
-							//fflush(ramFile);
 							com_read_stop();
 							delay_ms(500);
-							//printf("Retrying\n");
 
 							// Flush buffer
 							RS232_PollComport(cport_nr, readBuffer, 64);											
 
 							// Start off where we left off
-							//fseek(ramFile, currAddr, SEEK_SET);
 							set_number(currAddr, SET_START_ADDRESS);
 							set_mode(GBA_READ_SRAM);				
 						}
-
-						//print_progress_percent(readBytes, (ramBanks * ramEndAddress) / 64);
-						//led_progress_percent(readBytes, (ramBanks * ramEndAddress) / 28);
+						led_progress_percent(readBytes, (ramBanks * ramEndAddress) / 28);
 					}
 
 					com_read_stop(); // End read (for bank if flash)
@@ -268,8 +246,6 @@ static int dumpRam() {
 
 			// EEPROM
 			else {
-				//printf("Backing up save (EEPROM) to %s\n", titleFilename);
-				//printf("[             25%%             50%%             75%%            100%%]\n[");
 				allocate(&dmp_save.data, &save_reserved_mem, eepromEndAddress);
 				xmas_setup(eepromEndAddress / 28);
 				set_number(eepromSize, GBA_SET_EEPROM_SIZE);
@@ -289,25 +265,14 @@ static int dumpRam() {
 					readBytes += 8;
 
 					// Request 8 bytes more
-					if (currAddr < endAddr) {
-						com_read_cont();
-					}
-
-					//print_progress_percent(readBytes, endAddr / 64);
-					//led_progress_percent(readBytes, endAddr / 28);
+					if (currAddr < endAddr) com_read_cont();
+					led_progress_percent(readBytes, endAddr / 28);
 				}
-
 				com_read_stop(); // End read
 			}
-
-			//fclose(ramFile);
 			gbx_set_done_led();
-			//printf("]");
-			//printf("\nFinished\n");
 		}
-		else {
-			return 1;
-		}
+		else return 1;
 	}
 	if (options.filename) strcpy(dmp_save.name, options.filename);
 	else strcpy(dmp_save.name, gameTitle);
@@ -321,296 +286,190 @@ printf("\n--- Restore save from PC to Cartridge ---\n");
 	if (cartridgeMode == GB_MODE) {
 		// Does cartridge have RAM
 		if (ramEndAddress > 0 && headerCheckSumOk == 1) {
-/* 			char titleFilename[30];
-			if (gameTitle[0] != '\0') {
-				strncpy(titleFilename, gameTitle, 20);
+			mbc2_fix();
+			if (cartridgeType <= 4) { // MBC1
+				set_bank(0x6000, 1); // Set RAM Mode
 			}
-			else {
-				strncpy(titleFilename, "untitled", 9);
-			}
-			strncat(titleFilename, ".sav", 4);
+			set_bank(0x0000, 0x0A); // Initialise MBC
 			
-			// Open file
-			FILE *ramFile = fopen(titleFilename, "rb");
-			if (ramFile != NULL) { 
- 				printf("Going to write save from %s...", titleFilename);
-				printf("\n\n*** This will erase the save game from your Gameboy Cartridge ***");
-				printf("\nPress y to continue or any other key to abort.\n"); 
+			if (ramEndAddress == 0xA1FF) xmas_setup(ramEndAddress / 28);
+			else if (ramEndAddress == 0xA7FF) xmas_setup(ramEndAddress / 4 / 28);
+			else xmas_setup((ramBanks * (ramEndAddress - 0xA000 + 1)) / 28);
+			
+			
+			// Write RAM
+			uint32_t readBytes = 0;
+			for (uint8_t bank = 0; bank < ramBanks; bank++) {
+				uint16_t ramAddress = 0xA000;
+				set_bank(0x4000, bank);
+				set_number(0xA000, SET_START_ADDRESS); // Set start address again
 				
-			 	char confirmWrite = read_one_letter();
-				if (confirmWrite == 'y') { */
-					printf("\nRestoring save from %s\n", gameTitle);
-					printf("[             25%%             50%%             75%%            100%%]\n[");
+				while (ramAddress < ramEndAddress) {
+					memcpy(&writeBuffer, dmp_save.data+readBytes, 64);
+					com_write_bytes_from_file(WRITE_RAM, NULL, 64);
+					ramAddress += 64;
+					readBytes += 64;
+					com_wait_for_ack();
 					
-					mbc2_fix();
-					if (cartridgeType <= 4) { // MBC1
-						set_bank(0x6000, 1); // Set RAM Mode
-					}
-					set_bank(0x0000, 0x0A); // Initialise MBC
-					
-					if (ramEndAddress == 0xA1FF) {
-						xmas_setup(ramEndAddress / 28);
-					}
-					else if (ramEndAddress == 0xA7FF) {
-						xmas_setup(ramEndAddress / 4 / 28);
-					}
-					else {
-						xmas_setup((ramBanks * (ramEndAddress - 0xA000 + 1)) / 28);
-					}
-					
-					// Write RAM
-					uint32_t readBytes = 0;
-					for (uint8_t bank = 0; bank < ramBanks; bank++) {
-						uint16_t ramAddress = 0xA000;
-						set_bank(0x4000, bank);
-						set_number(0xA000, SET_START_ADDRESS); // Set start address again
-						
-						while (ramAddress < ramEndAddress) {
-							memcpy(&writeBuffer, dmp_save.data+readBytes, 64);
-							com_write_bytes_from_file(WRITE_RAM, NULL, 64);
-							ramAddress += 64;
-							readBytes += 64;
-							com_wait_for_ack();
-							
-							// Print progress
-							if (ramEndAddress == 0xA1FF) {
-								print_progress_percent(readBytes, 64);
-								led_progress_percent(readBytes, 28);
-							}
-							else if (ramEndAddress == 0xA7FF) {
-								print_progress_percent(readBytes / 4, 64);
-								led_progress_percent(readBytes / 4, 28);
-							}
-							else {
-								print_progress_percent(readBytes, (ramBanks * (ramEndAddress - 0xA000 + 1)) / 64);
-								led_progress_percent(readBytes, (ramBanks * (ramEndAddress - 0xA000 + 1)) / 28);
-							}
-						}
-					}
-					printf("]");
-					set_bank(0x4000, 0x00); // Stop rumble if it's present
-					set_bank(0x0000, 0x00); // Disable RAM
-					
-					//fclose(ramFile);
-					gbx_set_done_led();
-					printf("\nFinished\n");
-					return 0;
-				/* }
-				else {
-					printf("Aborted\n");
-					gbx_set_error_led();
-				} */
-/* 			}
-			else {
-				printf("%s File not found\n" ,titleFilename);
-			} */
+					// Print progress
+					if (ramEndAddress == 0xA1FF) led_progress_percent(readBytes, 28);
+					else if (ramEndAddress == 0xA7FF) led_progress_percent(readBytes / 4, 28);
+					else led_progress_percent(readBytes, (ramBanks * (ramEndAddress - 0xA000 + 1)) / 28);
+				}
+			}
+			set_bank(0x4000, 0x00); // Stop rumble if it's present
+			set_bank(0x0000, 0x00); // Disable RAM
+			
+			gbx_set_done_led();
+			printf("\nFinished\n");
+			return 0;
 		}
-		else {
-			printf("Cartridge has no RAM\n");
-		}
+		else printf("Cartridge has no RAM\n");
 	}
 	else { // GBA mode
 		// Does cartridge have RAM
 		if (ramEndAddress > 0 || eepromEndAddress > 0) {
-			/* char titleFilename[30];
-			if (gameTitle[0] != '\0') {
-				strncpy(titleFilename, gameTitle, 20);
-			}
-			else {
-				strncpy(titleFilename, "untitled", 9);
-			}
-			strncat(titleFilename, ".sav", 4);
-			
-			// Open file
-		 	FILE *ramFile = fopen(titleFilename, "rb"); 
-			if (ramFile != NULL) { */
-				// SRAM/Flash or EEPROM
-				if (eepromSize == EEPROM_NONE) {
-					// Check if it's SRAM or Flash (if we haven't checked before)
-					if (hasFlashSave == NOT_CHECKED) {
-						hasFlashSave = gba_test_sram_flash_write();
-					}
-					
-					if (hasFlashSave >= FLASH_FOUND) {
-						printf("Going to write save to Flash from %s", gameTitle);
-					}
-					else {
-						printf("Going to write save to SRAM from %s", gameTitle);
-					}
-				}
-				else {			
-					printf("Going to write save to EEPROM from %s", gameTitle);
-				}
+			// SRAM/Flash or EEPROM
+			if (eepromSize == EEPROM_NONE) {
+				// Check if it's SRAM or Flash (if we haven't checked before)
+				if (hasFlashSave == NOT_CHECKED) hasFlashSave = gba_test_sram_flash_write();
 				
-				printf("\n\n*** This will erase the save game from your Gameboy Advance Cartridge ***");
-				printf("\nPress y to continue or any other key to abort.\n");
-				
-				//char confirmWrite = read_one_letter();
-				//if (confirmWrite == 'y') {
-					if (eepromSize == EEPROM_NONE) {
-						if (hasFlashSave >= FLASH_FOUND) {
-							printf("\nWriting Save to Flash from %s", gameTitle);
-						}
-						else {
-							printf("\nWriting Save to SRAM from %s", gameTitle);
-						}
-					}
-					else {
-						printf("\nWriting Save to EEPROM from %s", gameTitle);
-					}
-					printf("\n[             25%%             50%%             75%%            100%%]\n[");
-					
-					// SRAM
-					if ((hasFlashSave == NO_FLASH || hasFlashSave == NO_FLASH_SRAM_FOUND ) && eepromSize == EEPROM_NONE) {
-						xmas_setup((ramEndAddress * ramBanks) / 28);
-						
-						uint32_t readBytes = 0;
-						for (uint8_t bank = 0; bank < ramBanks; bank++) {
-							if (bank == 1) { // 1Mbit SRAM
-								gba_flash_write_address_byte(0x1000000, 0x1);
-							}
-							
-							// Set start and end address
-							currAddr = 0x0000;
-							endAddr = ramEndAddress;
-							set_number(currAddr, SET_START_ADDRESS);
-							
-							// Write
-							while (currAddr < endAddr) {
-								memcpy(&writeBuffer, dmp_save.data+readBytes, 64);
-								com_write_bytes_from_file(GBA_WRITE_SRAM, NULL, 64);
-								currAddr += 64;
-								readBytes += 64;
-								com_wait_for_ack();
-								
-								print_progress_percent(readBytes, ramEndAddress * ramBanks / 64);
-								led_progress_percent(readBytes, ramEndAddress * ramBanks / 28);
-							}
-							
-							// SRAM 1Mbit, switch back to bank 0
-							if (bank == 1) {
-								gba_flash_write_address_byte(0x1000000, 0x0);
-							}
-						}
-					}
-					
-					// EEPROM
-					else if (eepromSize != EEPROM_NONE) {
-						xmas_setup(eepromEndAddress / 28);
-						set_number(eepromSize, GBA_SET_EEPROM_SIZE);
-						
-						// Set start and end address
-						currAddr = 0x000;
-						endAddr = eepromEndAddress;
-						set_number(currAddr, SET_START_ADDRESS);
-						
-						// Write
-						uint32_t readBytes = 0;
-						while (currAddr < endAddr) {
-							memcpy(&writeBuffer, dmp_save.data+readBytes, 8);
-							com_write_bytes_from_file(GBA_WRITE_EEPROM, NULL, 8);
-							currAddr += 8;
-							readBytes += 8;
-							
-							// Wait for ATmega to process write (~320us) and for EEPROM to write data (6ms)
-							com_wait_for_ack();
-							
-							print_progress_percent(readBytes, endAddr / 64);
-							led_progress_percent(readBytes, endAddr / 28);
-						}
-					}
-					
-					// Flash
-					else if (hasFlashSave != NO_FLASH) {
-						xmas_setup((ramBanks * endAddr) / 28);
-						
-						uint32_t readBytes = 0;
-						for (uint8_t bank = 0; bank < ramBanks; bank++) {
-							// Set start and end address
-							currAddr = 0x0000;
-							endAddr = ramEndAddress;
-							set_number(currAddr, SET_START_ADDRESS);
-							
-							// Program flash in 128 bytes at a time
-							if (hasFlashSave == FLASH_FOUND_ATMEL) {
-								while (currAddr < endAddr) {
-									printf("before memcpy\n");
-									memcpy(&writeBuffer, dmp_save.data+readBytes, 128);
+				if (hasFlashSave >= FLASH_FOUND) printf("Going to write save to Flash from %s", gameTitle);
+				else printf("Going to write save to SRAM from %s", gameTitle);
+			}
+			else printf("Going to write save to EEPROM from %s", gameTitle);
 
-									printf("after memcpy\n");
-									com_write_bytes_from_file(GBA_FLASH_WRITE_ATMEL, NULL, 128);
-									currAddr += 128;
-									readBytes += 128;
-									com_wait_for_ack(); // Wait for write complete
-									printf("after ack\n");
-									print_progress_percent(readBytes, (ramBanks * endAddr) / 64);
-									led_progress_percent(readBytes, (ramBanks * endAddr)  / 28);
-								}
-							}
-							else { // Program flash in 1 byte at a time
-								if (bank == 1) {
-									set_number(1, GBA_FLASH_SET_BANK); // Set bank 1
-								}
-								printf("1 byte at a time\n");
-								uint8_t sector = 0;
-								while (currAddr < endAddr) {
-									if (currAddr % 4096 == 0) {
-										printf("erase sector\n");
-										flash_4k_sector_erase(sector);
-										sector++;
-										com_wait_for_ack(); // Wait 25ms for sector erase
-										printf("ack\n");
-										
-										// Wait for first byte to be 0xFF, that's when we know the sector has been erased
-										readBuffer[0] = 0;
-										while (readBuffer[0] != 0xFF) {
-											set_number(currAddr, SET_START_ADDRESS);
-											set_mode(GBA_READ_SRAM);
-											
-											com_read_bytes(READ_BUFFER, 64);
-											com_read_stop();
-											
-											if (readBuffer[0] != 0xFF) {
-												delay_ms(5);
-											}
-										}
-										printf("while reed loop\n");
-										// Set start address again
-										set_number(currAddr, SET_START_ADDRESS);
-										
-										delay_ms(5); // Wait a little bit as hardware might not be ready
-									}
-									memcpy(&writeBuffer, dmp_save.data+readBytes, 64);
-									com_write_bytes_from_file(GBA_FLASH_WRITE_BYTE, NULL, 64);
-									currAddr += 64;
-									readBytes += 64;
-									com_wait_for_ack(); // Wait for write complete
-									
-									print_progress_percent(readBytes, (ramBanks * endAddr) / 64);
-									led_progress_percent(readBytes, (ramBanks * endAddr)  / 28);
-								}
-							}
-							
-							if (bank == 1) {
-								set_number(0, GBA_FLASH_SET_BANK); // Set bank 0 again
-							}
+			if (eepromSize == EEPROM_NONE) {
+				if (hasFlashSave >= FLASH_FOUND) printf("\nWriting Save to Flash from %s", gameTitle);
+				else printf("\nWriting Save to SRAM from %s", gameTitle);
+			}
+			else printf("\nWriting Save to EEPROM from %s", gameTitle);
+
+			// SRAM
+			if ((hasFlashSave == NO_FLASH || hasFlashSave == NO_FLASH_SRAM_FOUND ) && eepromSize == EEPROM_NONE) {
+				xmas_setup((ramEndAddress * ramBanks) / 28);
+				
+				uint32_t readBytes = 0;
+				for (uint8_t bank = 0; bank < ramBanks; bank++) {
+					if (bank == 1) { // 1Mbit SRAM
+						gba_flash_write_address_byte(0x1000000, 0x1);
+					}
+					
+					// Set start and end address
+					currAddr = 0x0000;
+					endAddr = ramEndAddress;
+					set_number(currAddr, SET_START_ADDRESS);
+					
+					// Write
+					while (currAddr < endAddr) {
+						memcpy(&writeBuffer, dmp_save.data+readBytes, 64);
+						com_write_bytes_from_file(GBA_WRITE_SRAM, NULL, 64);
+						currAddr += 64;
+						readBytes += 64;
+						com_wait_for_ack();
+						
+						led_progress_percent(readBytes, ramEndAddress * ramBanks / 28);
+					}
+					
+					// SRAM 1Mbit, switch back to bank 0
+					if (bank == 1) {
+						gba_flash_write_address_byte(0x1000000, 0x0);
+					}
+				}
+			}
+			
+			// EEPROM
+			else if (eepromSize != EEPROM_NONE) {
+				xmas_setup(eepromEndAddress / 28);
+				set_number(eepromSize, GBA_SET_EEPROM_SIZE);
+				
+				// Set start and end address
+				currAddr = 0x000;
+				endAddr = eepromEndAddress;
+				set_number(currAddr, SET_START_ADDRESS);
+				
+				// Write
+				uint32_t readBytes = 0;
+				while (currAddr < endAddr) {
+					memcpy(&writeBuffer, dmp_save.data+readBytes, 8);
+					com_write_bytes_from_file(GBA_WRITE_EEPROM, NULL, 8);
+					currAddr += 8;
+					readBytes += 8;
+					
+					// Wait for ATmega to process write (~320us) and for EEPROM to write data (6ms)
+					com_wait_for_ack();
+					led_progress_percent(readBytes, endAddr / 28);
+				}
+			}
+			
+			// Flash
+			else if (hasFlashSave != NO_FLASH) {
+				xmas_setup((ramBanks * endAddr) / 28);
+				
+				uint32_t readBytes = 0;
+				for (uint8_t bank = 0; bank < ramBanks; bank++) {
+					// Set start and end address
+					currAddr = 0x0000;
+					endAddr = ramEndAddress;
+					set_number(currAddr, SET_START_ADDRESS);
+					
+					// Program flash in 128 bytes at a time
+					if (hasFlashSave == FLASH_FOUND_ATMEL) {
+						while (currAddr < endAddr) {
+							memcpy(&writeBuffer, dmp_save.data+readBytes, 128);
+							com_write_bytes_from_file(GBA_FLASH_WRITE_ATMEL, NULL, 128);
+							currAddr += 128;
+							readBytes += 128;
+							com_wait_for_ack(); // Wait for write complete
+							led_progress_percent(readBytes, (ramBanks * endAddr)  / 28);
 						}
 					}
-					printf("]");
+					else { // Program flash in 1 byte at a time
+						if (bank == 1) {
+							set_number(1, GBA_FLASH_SET_BANK); // Set bank 1
+						}
+						uint8_t sector = 0;
+						while (currAddr < endAddr) {
+							if (currAddr % 4096 == 0) {
+								printf("erase sector\n");
+								flash_4k_sector_erase(sector);
+								sector++;
+								com_wait_for_ack(); // Wait 25ms for sector erase
+								
+								// Wait for first byte to be 0xFF, that's when we know the sector has been erased
+								readBuffer[0] = 0;
+								while (readBuffer[0] != 0xFF) {
+									set_number(currAddr, SET_START_ADDRESS);
+									set_mode(GBA_READ_SRAM);
+									
+									com_read_bytes(READ_BUFFER, 64);
+									com_read_stop();
+									
+									if (readBuffer[0] != 0xFF) {
+										delay_ms(5);
+									}
+								}
+								// Set start address again
+								set_number(currAddr, SET_START_ADDRESS);
+								delay_ms(5); // Wait a little bit as hardware might not be ready
+							}
+							memcpy(&writeBuffer, dmp_save.data+readBytes, 64);
+							com_write_bytes_from_file(GBA_FLASH_WRITE_BYTE, NULL, 64);
+							currAddr += 64;
+							readBytes += 64;
+							com_wait_for_ack(); // Wait for write complete
+							led_progress_percent(readBytes, (ramBanks * endAddr)  / 28);
+						}
+					}
 					
-					//fclose(ramFile);
-					gbx_set_done_led();
-					printf("\nFinished\n");
-					return 0;
-				/* }
-				else {
-					printf("Aborted\n");
-					gbx_set_error_led();
-				} */
-			/* }
-			else {
-				printf("%s File not found\n", titleFilename);
-			} */
+					if (bank == 1) {
+						set_number(0, GBA_FLASH_SET_BANK); // Set bank 0 again
+					}
+				}
+			}
+			gbx_set_done_led();
+			printf("\nFinished\n");
+			return 0;
 		}
 		else {
 			printf("Cartridge has no RAM\n");
@@ -622,8 +481,7 @@ printf("\n--- Restore save from PC to Cartridge ---\n");
 		
 
 static void dumpRom(){
-	printf("Reading ROM to %s\n", gameTitle);
-	//printf("[             25%%             50%%             75%%            100%%]\n[");
+	printf("Reading ROM: %s\n", gameTitle);
 	if (cartridgeMode == GB_MODE) {
 		// Set start and end address
 		uint32_t readBytes = 0;
@@ -681,7 +539,6 @@ static void dumpRom(){
 					uint8_t rxBytes = RS232_PollComport(cport_nr, localbuffer, 64);
 					if (rxBytes > 0) {
 						localbuffer[rxBytes] = 0;
-						//fwrite(localbuffer, 1, rxBytes, romFile);
 						memcpy(dmp.data+ramAddr, localbuffer, rxBytes);
 						ramAddr += rxBytes;
 						currAddr += rxBytes;
@@ -693,7 +550,6 @@ static void dumpRom(){
 						if (timedoutCounter >= 10000) { // Timed out, restart transfer 1 bank before
 							timedoutCounter = 0;
 							bank--;
-							//fseek(romFile, readBytes - (currAddr - 0x4000), SEEK_SET);
 							readBytes -= (currAddr - 0x4000);
 							break;			
 						}
@@ -716,7 +572,6 @@ static void dumpRom(){
 						}
 					}
 					else { // Didn't receive 64 bytes, usually this only happens for Apple MACs
-						//fflush(romFile);
 						com_read_stop();
 						delay_ms(500);
 						printf("Retrying\n");
@@ -725,20 +580,15 @@ static void dumpRom(){
 						RS232_PollComport(cport_nr, readBuffer, 64);											
 
 						// Start off where we left off
-						//fseek(romFile, readBytes, SEEK_SET);
 						set_number(currAddr, SET_START_ADDRESS);
 						set_mode(READ_ROM_RAM);				
 					}
 				}
-
-				// Print progress
-				//print_progress_percent(readBytes, (romBanks * 16384) / 64);
-				//led_progress_percent(readBytes, (romBanks * 16384) / 28);
+				led_progress_percent(readBytes, (romBanks * 16384) / 28);
 			}
 			com_read_stop(); // Stop reading ROM (as we will bank switch)
 		}
 		currAddr = ramAddr;
-		//printf("]");
 	}
 	else { // GBA mode
 		// Set start and end address
@@ -760,7 +610,6 @@ static void dumpRom(){
 				uint8_t rxBytes = RS232_PollComport(cport_nr, buffer, 64);
 				if (rxBytes > 0) {
 					buffer[rxBytes] = 0;
-					//fwrite(buffer, 1, rxBytes, romFile);
 					memcpy(dmp.data+currAddr, buffer, rxBytes);
 					currAddr += rxBytes;
 					timedoutCounter = 0;
@@ -774,12 +623,10 @@ static void dumpRom(){
 						if (currAddr >= 0x20000) {
 							uint32_t hexCalc = ((currAddr / 0x10000) - 1);
 							uint32_t calculateRewind = 0x10000 * hexCalc;
-							//fseek(romFile, calculateRewind, SEEK_SET);
 							currAddr = calculateRewind;
 							set_number(currAddr / 2, SET_START_ADDRESS);
 						}
 						else {
-							//fseek(romFile, 0, SEEK_SET);
 							currAddr = 0;
 							set_mode('0');
 							delay_ms(5);
@@ -792,12 +639,8 @@ static void dumpRom(){
 				if (currAddr % 0x10000 == 0 && currAddr != endAddr) {
 					set_mode(GBA_READ_ROM_8000H);
 				}
-
-				// Print progress
-				//print_progress_percent(currAddr, endAddr / 64);
-				//led_progress_percent(currAddr, endAddr / 28);
+				led_progress_percent(currAddr, endAddr / 28);
 			}
-			//printf("]");
 			com_read_stop();
 		}
 		else {
@@ -816,22 +659,16 @@ static void dumpRom(){
 					}
 				}
 				else { // Didn't receive 64 bytes
-					//fflush(romFile);
 					com_read_stop();
 					delay_ms(500);
 
 					// Flush buffer
 					RS232_PollComport(cport_nr, readBuffer, readLength);											
 
-					// Start off where we left off
-					//fseek(romFile, currAddr, SEEK_SET);
 					set_number(currAddr / 2, SET_START_ADDRESS);
 					set_mode(GBA_READ_ROM);				
 				}
-
-				// Print progress
-				//print_progress_percent(currAddr, endAddr / 64);
-				//led_progress_percent(currAddr, endAddr / 28);
+				led_progress_percent(currAddr, endAddr / 28);
 			}
 			com_read_stop();
 		}
@@ -851,28 +688,26 @@ static void CacheROM(){
 	strcpy(filename, nogame.name);
 	cartridgeMode == GB_MODE? strcat(filename, ".gb") : strcat(filename, ".gba");
 	if( access( filename, R_OK ) == 0 ) {
-			printf("%s exists.\n", filename);
+			printf("%s exists, reading it.\n", filename);
 			FILE *fp = fopen(filename, "r");
 			fseek(fp, 0, SEEK_END);
 			unsigned int size = ftell(fp);
 			fseek(fp, 0, SEEK_SET);
-			
+
 			allocate(&dmp.data, &game_reserved_mem, size);
 			fread(dmp.data, 1, size, fp);
 			dmp.size = size;
 			strcpy(dumped_name, nogame.name);
 			fclose(fp);
 		} else {
-			printf("%s exists not.\n", filename);
+			printf("%s does not exist, ceating it.\n", filename);
 			strcpy(nogame.name, "reading...");
 			game = &nogame;
 			dumpRom();
-			//write file
 			FILE *fp = fopen(filename, "w+");
 			fwrite(dmp.data, 1, dmp.size, fp);
 			fclose(fp);
 		}
-	
 }
 
 static void updateTitle(){
@@ -894,6 +729,7 @@ static void updateTitle(){
 
 void *Thandler(void *ptr) {
 	struct fuse_session *se = (struct fuse_session*) ptr;
+	struct timespec t;
 	
     if (options.ramOnly) game = &ramOnlyFile;
 	if (options.cache_path) {
@@ -954,7 +790,10 @@ void *Thandler(void *ptr) {
 			writeRam();
 			condition = 0;
 		}
-		delay_ms(5000);
+		time(&t.tv_sec);
+		t.tv_sec += 5;
+		if (pthread_cond_timedwait(&cond, &mutex, &t) == 0)
+		puts("Signal from fun_write()");
 	}
 
 	if (save_reserved_mem) free(dmp_save.data);

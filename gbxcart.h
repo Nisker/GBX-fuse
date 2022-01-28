@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include "setup.h"
 #include <dirent.h> 
+#include <time.h>
 
 #define GAME_INO 2
 #define SAVE_INO 3
@@ -40,6 +41,8 @@ extern struct FileInfo *save;
 extern struct FileInfo *game;
 
 extern int condition;
+extern pthread_mutex_t mutex;
+extern pthread_cond_t cond;
 
 int gba();
 

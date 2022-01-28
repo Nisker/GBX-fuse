@@ -1,14 +1,9 @@
 /*
  Author: Nisker
  Created: 14/11/2021
- Last Modified: 14/11/2021
+ Last Modified: 28/01/2022
  License: GPL-3.0
 
- */
-
- /*
- * TODOs:
- * add ram write function.
  */
 
 #define FUSE_USE_VERSION 34
@@ -18,9 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <assert.h>
 #include <pthread.h>
 #include "gbxcart.h"
 #include <stddef.h>
@@ -195,6 +188,7 @@ static void fun_write(fuse_req_t req, fuse_ino_t ino, const char *buf, size_t si
 			memcpy(dmp_save.data+off, buf, size);
 			fuse_reply_write(req, size);
 			condition = 1;
+			pthread_cond_signal(&cond);
 		} else fuse_reply_err(req, EFBIG);
 	}
 
