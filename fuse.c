@@ -12,7 +12,6 @@
  */
 
 #define FUSE_USE_VERSION 34
-#define _GNU_SOURCE
 
 #include <fuse_lowlevel.h>
 #include <stdio.h>
@@ -50,12 +49,14 @@ int condition = 0;
 
 #define OPTION(t, p) { t, offsetof(struct options, p), 1 }
 static const struct fuse_opt gbx_opts[] = {
-	OPTION("--norom", ramOnly),
-	OPTION("-n", ramOnly),
+	OPTION("--save", ramOnly),
+	OPTION("-s", ramOnly),
 	OPTION("--reread", reread),
 	OPTION("-e", reread),
 	OPTION("--readonly", readonly),
 	OPTION("-r", readonly),
+	OPTION("--name=%s", filename),
+	OPTION("--cache=%s", cache_path),
 	FUSE_OPT_END
 };
 
@@ -236,9 +237,13 @@ int main(int argc, char *argv[])
 		printf("usage: %s [options] <mountpoint>\n\n", argv[0]);
 		fuse_cmdline_help();
 		fuse_lowlevel_help();
-		printf("\n    -n   --norom           Read only the Save data\n");
-		printf("    -r   --readonly        Read only mode\n");
-		printf("    -e   --reread          Re-read the cartridge on reinsert\n");
+		printf( "\n"\
+				"    -s   --save            Read only the Save data\n"\
+				"    -r   --readonly        Read only mode\n"\
+				"    -e   --reread          Re-read the cartridge on reinsert\n"\
+				"         --cache=<..>      Path to cached files for faster loading\n"\
+				"         --name=<..>       Custom name\n"\
+				);
 		ret = 0;
 		goto err_out1;
 	} else if (opts.show_version) {
@@ -254,7 +259,7 @@ int main(int argc, char *argv[])
 		ret = 1;
 		goto err_out1;
 	}
-	
+
 	if (gba()) {
 		goto err_out1;
 	}
@@ -278,7 +283,6 @@ int main(int argc, char *argv[])
 	if (rc){
         fprintf(stderr, "pthread_create failed with %s\n", strerror(rc));
 	}
-	pthread_setname_np(thread, "Thandler");
 
 	/* Block until ctrl+c or fusermount -u */
 	if (opts.singlethread)

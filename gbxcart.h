@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include "setup.h"
+#include <dirent.h> 
 
 #define GAME_INO 2
 #define SAVE_INO 3
@@ -15,6 +16,8 @@ extern struct options {
 	int ramOnly;
 	int reread;
 	int readonly;
+	const char *filename;
+	const char *cache_path;
 } options;
 
 extern unsigned int save_reserved_mem;

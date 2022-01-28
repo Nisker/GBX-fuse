@@ -11,6 +11,7 @@
 
 unsigned int save_reserved_mem = 0;
 unsigned int game_reserved_mem = 0;
+char dumped_name[20];
 
 static void allocate(char **ptr, unsigned int *prevSize, unsigned int size){
 	if (*prevSize < size) {
@@ -308,7 +309,8 @@ static int dumpRam() {
 			return 1;
 		}
 	}
-	strcpy(dmp_save.name, gameTitle);
+	if (options.filename) strcpy(dmp_save.name, options.filename);
+	else strcpy(dmp_save.name, gameTitle);
 	strcat(dmp_save.name, ".sav");
 	dmp_save.size = currAddr;
 	return 0;
@@ -620,7 +622,7 @@ printf("\n--- Restore save from PC to Cartridge ---\n");
 		
 
 static void dumpRom(){
-	//printf("Reading ROM to %s\n", gameTitle);
+	printf("Reading ROM to %s\n", gameTitle);
 	//printf("[             25%%             50%%             75%%            100%%]\n[");
 	if (cartridgeMode == GB_MODE) {
 		// Set start and end address
@@ -837,30 +839,56 @@ static void dumpRom(){
 	
 	dmp.size = currAddr;
 	gbx_set_done_led();
-	strcpy(dmp.name, gameTitle);
-	cartridgeMode == GB_MODE? strcat(dmp.name, ".gb") : strcat(dmp.name, ".gba");
+	strcpy(dumped_name, gameTitle);
+}
+
+static void CacheROM(){
+	char cwd[200];
+   	if (getcwd(cwd, sizeof(cwd)) != NULL) {
+    	printf("Current working dir: %s\n", cwd);
+	}
+	char filename[20];
+	strcpy(filename, nogame.name);
+	cartridgeMode == GB_MODE? strcat(filename, ".gb") : strcat(filename, ".gba");
+	if( access( filename, R_OK ) == 0 ) {
+			printf("%s exists.\n", filename);
+			FILE *fp = fopen(filename, "r");
+			fseek(fp, 0, SEEK_END);
+			unsigned int size = ftell(fp);
+			fseek(fp, 0, SEEK_SET);
+			
+			allocate(&dmp.data, &game_reserved_mem, size);
+			fread(dmp.data, 1, size, fp);
+			dmp.size = size;
+			strcpy(dumped_name, nogame.name);
+			fclose(fp);
+		} else {
+			printf("%s exists not.\n", filename);
+			strcpy(nogame.name, "reading...");
+			game = &nogame;
+			dumpRom();
+			//write file
+			FILE *fp = fopen(filename, "w+");
+			fwrite(dmp.data, 1, dmp.size, fp);
+			fclose(fp);
+		}
 	
 }
 
 static void updateTitle(){
 
 	set_mode(VOLTAGE_3_3V);
-	//gba_read_gametitle();
 	
 	if (read_gba_header()) {
 		strcpy(nogame.name, gameTitle);
-		strcat(nogame.name, ".gba");
 		return;
 	}
-	//delay_ms(100);
 	read_gb_header();
 	if (gameTitle[1]) {
 		strcpy(nogame.name, gameTitle);
-		strcat(nogame.name, ".gb");
 		set_mode(VOLTAGE_5V);
 		return;
 	}
-	//set_mode(VOLTAGE_3_3V);
 	strcpy(nogame.name, "no game");
 }
 
@@ -868,12 +896,20 @@ void *Thandler(void *ptr) {
 	struct fuse_session *se = (struct fuse_session*) ptr;
 	
     if (options.ramOnly) game = &ramOnlyFile;
+	if (options.cache_path) {
+		if( access( options.cache_path, F_OK ) == 0 ) {
+			printf("%s exists.\n", options.cache_path);
+			chdir(options.cache_path);
+		} else {
+			options.cache_path = NULL;
+		}
+	}
 
 	while(!fuse_session_exited(se)){
 		updateTitle();
 		cartridgeMode = request_value(CART_MODE);
 
-		if (strcmp(dmp.name, nogame.name)) {		// difference between dmp.name and nogame.name?
+		if (strcmp(dumped_name, nogame.name)) {		// difference between dumped_name and nogame.name?
 			save = &nosave;
 			if (strcmp(nogame.name, "no game")) {	// did it read a game game?					
 				if (!dumpRam()){
@@ -882,26 +918,34 @@ void *Thandler(void *ptr) {
 				}
 
                 if (!options.ramOnly){
-                    strcpy(nogame.name, "reading...");	
-                    game = &nogame;						
-                    notify_inode(GAME_INO);
-                    dumpRom();
+					if (options.cache_path) CacheROM();
+					else {
+						strcpy(nogame.name, "reading...");	
+						game = &nogame;						
+						notify_inode(GAME_INO);
+						dumpRom();
+					}
+					if (options.filename) strcpy(dmp.name, options.filename);
+					else strcpy(dmp.name, dumped_name);
+					cartridgeMode == GB_MODE? strcat(dmp.name, ".gb") : strcat(dmp.name, ".gba");
                     game = &dmp;
                     notify_inode(GAME_INO);
                 }
                 else {
-                    strcpy(dmp.name, gameTitle);
-                    cartridgeMode == GB_MODE? strcat(dmp.name, ".gb") : strcat(dmp.name, ".gba");
+                    strcpy(dumped_name, gameTitle);
                 }
                 
 			} else {
                 if(!options.ramOnly) game = &nogame;	//it didnt read a game, set it to no game.
-                if(options.reread) strcpy(dmp.name, "--invalid--");
+                if(options.reread) strcpy(dumped_name, "--invalid--");
 			}
 		} else if (game == &nogame) {
 			save = &dmp_save;
             notify_inode(SAVE_INO);
             if(!options.ramOnly) {
+				if (options.filename) strcpy(dmp.name, options.filename);
+				else strcpy(dmp.name, dumped_name);
+				cartridgeMode == GB_MODE? strcat(dmp.name, ".gb") : strcat(dmp.name, ".gba");
                 game = &dmp;
                 notify_inode(GAME_INO);
             }
