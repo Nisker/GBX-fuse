@@ -2,7 +2,7 @@
  Author: Nisker
  Credits to: Alex from insideGadgets (www.insidegadgets.com) for the initial implementation.
  Created: 14/11/2021
- Last Modified: 28/01/2022
+ Last Modified: 29/01/2022
  License: GPL-3.0
 
  */
@@ -37,13 +37,19 @@ int gba(){
 	set_mode('0');
 	RS232_flushRX(cport_nr);
 	
-	// Get cartridge mode - Gameboy or Gameboy Advance
-	cartridgeMode = request_value(CART_MODE);
-	
 	// Get PCB version
 	gbxcartPcbVersion = request_value(READ_PCB_VERSION);
 	xmas_wake_up();
-	set_mode(VOLTAGE_3_3V);
+	
+	if (request_value(READ_FIRMWARE_VERSION) == 0) {
+		printf("\nFirmware L1 may be installed. In order to use this applications you will need to downgrade to R30.\n");
+		read_one_letter();
+		return 1;
+	}
+
+	// GBx v1.4 - Power up the cart if not already powered up and flush buffer
+	gbx_cart_power_up();
+	RS232_flushRX(cport_nr);
 	
 	return 0;
 }
@@ -53,7 +59,7 @@ static int dumpRam() {
 	if (cartridgeMode == GB_MODE) {
 		// Does cartridge have RAM
 		if (ramEndAddress > 0 && headerCheckSumOk == 1) {
-			allocate(&dmp_save.data, &save_reserved_mem, 0x10000);
+			allocate(&dmp_save.data, &save_reserved_mem, ramEndAddress);
 			currAddr = 0x00000;
 
 			mbc2_fix();
@@ -65,7 +71,6 @@ static int dumpRam() {
 			// Check if Gameboy Camera cart with v1.0/1.1 PCB with R1 firmware, read data slower
 			if (cartridgeType == 252 && gbxcartFirmwareVersion == 1) {
 				// Read RAM
-				uint32_t readBytes = 0;
 				for (uint8_t bank = 0; bank < ramBanks; bank++) {
 					uint16_t ramAddress = 0xA000;
 					set_bank(0x4000, bank);
@@ -115,7 +120,6 @@ static int dumpRam() {
 						memcpy(dmp_save.data+currAddr, readBuffer, 64);
 						currAddr += 64;
 						ramAddress += 64;
-						readBytes += 64;
 
 						// Request 64 bytes more
 						if (ramAddress < ramEndAddress) {
@@ -135,7 +139,6 @@ static int dumpRam() {
 				else xmas_setup((ramBanks * (ramEndAddress - 0xA000 + 1)) / 28);
 
 				// Read RAM
-				uint32_t readBytes = 0;
 				for (uint8_t bank = 0; bank < ramBanks; bank++) {
 					uint16_t ramAddress = 0xA000;
 					set_bank(0x4000, bank);
@@ -148,7 +151,6 @@ static int dumpRam() {
 							memcpy(dmp_save.data+currAddr, readBuffer, comReadBytes);
 							currAddr += 64;
 							ramAddress += 64;
-							readBytes += 64;
 
 							// Request 64 bytes more
 							if (ramAddress < ramEndAddress) {
@@ -177,6 +179,7 @@ static int dumpRam() {
 			gbx_set_done_led();
 		}
 		else {
+			gbx_set_error_led();
 			return 1;
 		}
 	}
@@ -189,7 +192,6 @@ static int dumpRam() {
 				xmas_setup((ramBanks * ramEndAddress) / 28);
 
 				// Read RAM
-				uint32_t readBytes = 0;
 				for (uint8_t bank = 0; bank < ramBanks; bank++) {
 					// Flash, switch bank 1
 					if (hasFlashSave >= FLASH_FOUND && bank == 1) {
@@ -210,7 +212,6 @@ static int dumpRam() {
 						if (comReadBytes == 64) {
 							memcpy(dmp_save.data+currAddr, readBuffer, comReadBytes);
 							currAddr += 64;
-							readBytes += 64;
 
 							// Request 64 bytes more
 							if (currAddr < endAddr) {
@@ -228,7 +229,7 @@ static int dumpRam() {
 							set_number(currAddr, SET_START_ADDRESS);
 							set_mode(GBA_READ_SRAM);				
 						}
-						led_progress_percent(readBytes, (ramBanks * ramEndAddress) / 28);
+						led_progress_percent(currAddr, (ramBanks * ramEndAddress) / 28);
 					}
 
 					com_read_stop(); // End read (for bank if flash)
@@ -257,22 +258,23 @@ static int dumpRam() {
 				set_mode(GBA_READ_EEPROM);
 
 				// Read EEPROM
-				uint32_t readBytes = 0;
 				while (currAddr < endAddr) {
 					com_read_bytes(NULL, 8);
 					memcpy(dmp_save.data+currAddr, readBuffer, 8);
 					currAddr += 8;
-					readBytes += 8;
 
 					// Request 8 bytes more
 					if (currAddr < endAddr) com_read_cont();
-					led_progress_percent(readBytes, endAddr / 28);
+					led_progress_percent(currAddr, endAddr / 28);
 				}
 				com_read_stop(); // End read
 			}
 			gbx_set_done_led();
 		}
-		else return 1;
+		else {
+			gbx_set_error_led();
+			return 1;
+		}
 	}
 	if (options.filename) strcpy(dmp_save.name, options.filename);
 	else strcpy(dmp_save.name, gameTitle);
@@ -281,8 +283,8 @@ static int dumpRam() {
 	return 0;
 }
 
-static int writeRam(){
-printf("\n--- Restore save from PC to Cartridge ---\n");
+static int writeRam() {
+	printf("\n--- Restore save from PC to Cartridge ---\n");
 	if (cartridgeMode == GB_MODE) {
 		// Does cartridge have RAM
 		if (ramEndAddress > 0 && headerCheckSumOk == 1) {
@@ -333,7 +335,7 @@ printf("\n--- Restore save from PC to Cartridge ---\n");
 			if (eepromSize == EEPROM_NONE) {
 				// Check if it's SRAM or Flash (if we haven't checked before)
 				if (hasFlashSave == NOT_CHECKED) hasFlashSave = gba_test_sram_flash_write();
-				
+
 				if (hasFlashSave >= FLASH_FOUND) printf("Going to write save to Flash from %s", gameTitle);
 				else printf("Going to write save to SRAM from %s", gameTitle);
 			}
@@ -346,7 +348,7 @@ printf("\n--- Restore save from PC to Cartridge ---\n");
 			else printf("\nWriting Save to EEPROM from %s", gameTitle);
 
 			// SRAM
-			if ((hasFlashSave == NO_FLASH || hasFlashSave == NO_FLASH_SRAM_FOUND ) && eepromSize == EEPROM_NONE) {
+			if (hasFlashSave == NO_FLASH_SRAM_FOUND && eepromSize == EEPROM_NONE) {
 				xmas_setup((ramEndAddress * ramBanks) / 28);
 				
 				uint32_t readBytes = 0;
@@ -478,15 +480,13 @@ printf("\n--- Restore save from PC to Cartridge ---\n");
 	}
 	return 1;
 }
-		
 
-static void dumpRom(){
+static void dumpRom() {
 	printf("Reading ROM: %s\n", gameTitle);
 	if (cartridgeMode == GB_MODE) {
 		// Set start and end address
-		uint32_t readBytes = 0;
-		currAddr = 0x0000;
 		uint32_t ramAddr = 0x0000;
+		currAddr = 0x0000;
 		endAddr = 0x7FFF;
 		xmas_setup((romBanks * 16384) / 28);
 		romSize < 8 ? 
@@ -542,7 +542,6 @@ static void dumpRom(){
 						memcpy(dmp.data+ramAddr, localbuffer, rxBytes);
 						ramAddr += rxBytes;
 						currAddr += rxBytes;
-						readBytes += rxBytes;
 						timedoutCounter = 0;
 					}
 					else {
@@ -550,7 +549,7 @@ static void dumpRom(){
 						if (timedoutCounter >= 10000) { // Timed out, restart transfer 1 bank before
 							timedoutCounter = 0;
 							bank--;
-							readBytes -= (currAddr - 0x4000);
+							ramAddr -= (currAddr - 0x4000);
 							break;			
 						}
 					}
@@ -564,7 +563,6 @@ static void dumpRom(){
 						memcpy(dmp.data+ramAddr, readBuffer, comReadBytes);
 						ramAddr += 64;
 						currAddr += 64;
-						readBytes += 64;
 
 						// Request 64 bytes more
 						if (currAddr < endAddr) {
@@ -584,7 +582,7 @@ static void dumpRom(){
 						set_mode(READ_ROM_RAM);				
 					}
 				}
-				led_progress_percent(readBytes, (romBanks * 16384) / 28);
+				led_progress_percent(ramAddr, (romBanks * 16384) / 28);
 			}
 			com_read_stop(); // Stop reading ROM (as we will bank switch)
 		}
@@ -598,8 +596,7 @@ static void dumpRom(){
 		set_number(currAddr, SET_START_ADDRESS);
 		xmas_setup(endAddr / 28);
 		allocate(&dmp.data, &game_reserved_mem, romEndAddr);
-		
-		lastAddrHash = endAddr / 64;
+
 		// Fast reading
 		if (fastReadEnabled == 1) {
 			uint16_t timedoutCounter = 0;
@@ -688,26 +685,26 @@ static void CacheROM(){
 	strcpy(filename, nogame.name);
 	cartridgeMode == GB_MODE? strcat(filename, ".gb") : strcat(filename, ".gba");
 	if( access( filename, R_OK ) == 0 ) {
-			printf("%s exists, reading it.\n", filename);
-			FILE *fp = fopen(filename, "r");
-			fseek(fp, 0, SEEK_END);
-			unsigned int size = ftell(fp);
-			fseek(fp, 0, SEEK_SET);
+		printf("%s exists, reading it.\n", filename);
+		FILE *fp = fopen(filename, "r");
+		fseek(fp, 0, SEEK_END);
+		unsigned int size = ftell(fp);
+		fseek(fp, 0, SEEK_SET);
 
-			allocate(&dmp.data, &game_reserved_mem, size);
-			fread(dmp.data, 1, size, fp);
-			dmp.size = size;
-			strcpy(dumped_name, nogame.name);
-			fclose(fp);
-		} else {
-			printf("%s does not exist, ceating it.\n", filename);
-			strcpy(nogame.name, "reading...");
-			game = &nogame;
-			dumpRom();
-			FILE *fp = fopen(filename, "w+");
-			fwrite(dmp.data, 1, dmp.size, fp);
-			fclose(fp);
-		}
+		allocate(&dmp.data, &game_reserved_mem, size);
+		fread(dmp.data, 1, size, fp);
+		dmp.size = size;
+		strcpy(dumped_name, nogame.name);
+		fclose(fp);
+	} else {
+		printf("%s does not exist, ceating it.\n", filename);
+		strcpy(nogame.name, "reading...");
+		game = &nogame;
+		dumpRom();
+		FILE *fp = fopen(filename, "w+");
+		fwrite(dmp.data, 1, dmp.size, fp);
+		fclose(fp);
+	}
 }
 
 static void updateTitle(){
@@ -716,11 +713,12 @@ static void updateTitle(){
 	
 	if (read_gba_header()) {
 		strcpy(nogame.name, gameTitle);
+		if (gbxcartPcbVersion == GBXMAS) xmas_set_leds(0x9AAA6AA);
 		return;
 	}
-	read_gb_header();
-	if (gameTitle[1]) {
+	if (read_gb_header()) {
 		strcpy(nogame.name, gameTitle);
+		if (gbxcartPcbVersion == GBXMAS) xmas_set_leds(0x6555955);	
 		set_mode(VOLTAGE_5V);
 		return;
 	}

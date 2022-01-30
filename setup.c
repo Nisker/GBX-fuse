@@ -1,10 +1,10 @@
 /*
  GBxCart RW - Console Interface
- Version: 1.35
+ Version: 1.40
  Author: Alex from insideGadgets (www.insidegadgets.com)
  Modified by: Nisker
  Created: 7/11/2016
- Last Modified: 14/11/2021
+ Last Modified: 29/01/2022
  License: CC-BY-NC-SA
  
  */
@@ -271,19 +271,19 @@ void xmas_setup (uint32_t progressNumber) {
 }
 
 void gbx_set_done_led (void) {
-	if (gbxcartPcbVersion == PCB_1_4) {
+	if ((gbxcartPcbVersion >= PCB_1_4 && gbxcartPcbVersion < GBXMAS)) {
 		set_mode(DONE_LED_ON);
 	}
 }
 
 void gbx_set_error_led (void) {
-	if (gbxcartPcbVersion == PCB_1_4) {
+	if ((gbxcartPcbVersion >= PCB_1_4 && gbxcartPcbVersion < GBXMAS)) {
 		set_mode(ERROR_LED_ON);
 	}
 }
 
 void gbx_cart_power_up (void) {
-	if (gbxcartPcbVersion == PCB_1_4) { // If cart isn't powered up then power it on
+	if ((gbxcartPcbVersion >= PCB_1_4 && gbxcartPcbVersion < GBXMAS)) { // If cart isn't powered up then power it on
 		uint8_t cartPowered = request_value(QUERY_CART_PWR);
 		if (cartPowered == 0) {
 			set_mode(CART_PWR_ON);
@@ -297,7 +297,7 @@ void gbx_cart_power_up (void) {
 }
 
 void gbx_cart_power_down (void) {
-	if (gbxcartPcbVersion == PCB_1_4) { // If cart isn't powered up then power it on
+	if ((gbxcartPcbVersion >= PCB_1_4 && gbxcartPcbVersion < GBXMAS)) { // If cart isn't powered down then power it off
 		set_mode(CART_PWR_OFF);
 		delay_ms(500);
 	}
@@ -608,7 +608,7 @@ void mbc2_fix (void) {
 }
 
 // Read the first 384 bytes of ROM and process the Gameboy header information
-void read_gb_header (void) {
+int read_gb_header (void) {
 	currAddr = 0x0000;
 	endAddr = 0x0180;
 	
@@ -788,6 +788,7 @@ void read_gb_header (void) {
 		printf ("Failed\n");
 		headerCheckSumOk = 0;
 	}
+	return headerCheckSumOk;
 }
 
 

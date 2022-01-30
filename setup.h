@@ -1,10 +1,10 @@
 /*
  GBxCart RW - Console Interface
- Version: 1.35
+ Version: 1.40
  Author: Alex from insideGadgets (www.insidegadgets.com)
  Modified by: Nisker
  Created: 7/11/2016
- Last Modified: 14/11/2021
+ Last Modified: 29/01/2022
  License: CC-BY-NC-SA
  
  */
@@ -137,6 +137,7 @@ extern char *comports[200];
 #define PCB_1_4 5
 #define GBXMAS 90
 #define MINI 100
+#define MINI_1_1 101
 
 // Common vars
 #define READ_BUFFER 0
@@ -248,7 +249,7 @@ void set_bank (uint16_t address, uint8_t bank);
 void mbc2_fix (void);
 
 // Read the first 384 bytes of ROM and process the Gameboy header information
-void read_gb_header (void);
+int read_gb_header (void);
 
 
 // ****** Gameboy Advance functions ****** 
